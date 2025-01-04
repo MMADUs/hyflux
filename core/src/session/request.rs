@@ -10,7 +10,6 @@ const INIT_HEADER_SIZE: usize = 8;
 const BUILD_HEADER_BUFFER: usize = 512;
 
 const CRLF: &[u8; 2] = b"\r\n";
-const CRLF_END: &[u8; 4] = b"\r\n\r\n";
 const HEADER_DELIMITER: &[u8; 2] = b": ";
 const EMPTY_SPACE: &[u8; 1] = b" ";
 

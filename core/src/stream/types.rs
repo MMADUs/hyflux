@@ -43,7 +43,7 @@ impl StreamType {
     }
 
     // only works if stream type is tcp, otherwise do nothing
-    pub fn set_keepalive(&mut self, config: TcpKeepAliveConfig) {
+    pub fn set_keepalive(&mut self, config: &TcpKeepAliveConfig) {
         if let RawStream::Tcp(stream) = &self.stream.get_mut() {
             let fd = stream.as_raw_fd();
             // calling from sys utils: providing low level socket optimization

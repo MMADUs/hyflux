@@ -1,6 +1,6 @@
 use std::error::Error as ErrorTrait;
-use std::fmt;
-use std::fmt::Debug;
+//use std::fmt;
+//use std::fmt::Debug;
 use std::result::Result as StdResult;
 
 // custom error

@@ -59,18 +59,35 @@ impl StreamManager {
                 } else {
                     TcpSocket::new_v6()
                 }?;
-                // tcp tune
-                let fd = socket.as_raw_fd();
-                set_tcp_fastopen_connect(fd);
-                set_recv_buf(fd, 4194304); // hardcoded for a while
-                set_dscp(fd, 46); // hardcoded for a while
+                // apply socket config
+                if let Some(config) = &peer.tcp_config {
+                    let fd = socket.as_raw_fd();
+                    // set tcp fastopen
+                    if config.tcp_fast_open {
+                        if let Err(e) = set_tcp_fastopen_connect(fd) {
+                            panic!("error unable to set tcp fast open: {}", e)
+                        }
+                    }
+                    // set recv buf
+                    if let Some(value) = config.tcp_recv_buf {
+                        if let Err(e) = set_recv_buf(fd, value) {
+                            panic!("error unable to set tcp recv buf: {}", e);
+                        }
+                    }
+                    // set dscp
+                    if let Some(value) = config.dscp {
+                        if let Err(e) = set_dscp(fd, value) {
+                            panic!("error unable to set dscp: {}", e);
+                        }
+                    }
+                }
                 // connect tcp
                 match socket.connect(*address).await {
                     Ok(tcp_stream) => {
-                        // set no delay
-                        tcp_stream.set_nodelay(true);
                         // dynamic type convert
-                        let stream_type = StreamType::from(tcp_stream);
+                        let mut stream_type = StreamType::from(tcp_stream);
+                        // set no delay by default
+                        stream_type.set_no_delay();
                         let dyn_stream_type: Stream = Box::new(stream_type);
                         dyn_stream_type
                     }

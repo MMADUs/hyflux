@@ -66,7 +66,7 @@ impl Default for TcpKeepAliveConfig {
 
 // used to inject the keep alvie configuration
 // enabling keepalive with configurations at once.
-pub fn set_tcp_keepalive(fd: RawFd, config: TcpKeepAliveConfig) -> io::Result<()> {
+pub fn set_tcp_keepalive(fd: RawFd, config: &TcpKeepAliveConfig) -> io::Result<()> {
     set_keepalive_flag(fd, true)?;
     set_keepalive_idle(fd, config.idle)?;
     set_keepalive_interval(fd, config.interval)?;

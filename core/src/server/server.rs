@@ -95,7 +95,7 @@ impl<A: ServiceType + Send + Sync + 'static> Server<A> {
     fn run_service(service: Service<A>, alloc_threads: usize) -> Runtime {
         // run each listener service on top of the runtime
         let runtime = Runtime::new("runtime", alloc_threads);
-        let address_stack = service.get_address_stack();
+        let address_stack = service.address_stack.clone();
         // wrap the service into Arc
         // this service will be handled across threads.
         let service = Arc::new(service);

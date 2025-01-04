@@ -1,7 +1,8 @@
 use futures::future;
 use std::sync::Arc;
+use std::fs::Permissions;
 
-use crate::listener::listener::{ListenerAddress, Socket};
+use crate::listener::listener::{ListenerAddress, Socket, TcpListenerConfig};
 use crate::listener::socket::SocketAddress;
 use crate::pool::stream::StreamManager;
 use crate::service::peer::UpstreamPeer;
@@ -12,41 +13,14 @@ pub trait ServiceType: Send + Sync + 'static {
     fn say_hi(&self) -> String;
 }
 
-// the network stack is used for network configurations
-// this held many network for 1 service
-pub struct NetworkStack {
-    pub address_stack: Vec<ListenerAddress>,
-}
-
-impl NetworkStack {
-    // new network stack
-    pub fn new() -> Self {
-        NetworkStack {
-            address_stack: Vec::new(),
-        }
-    }
-
-    // add tcp address to network list
-    pub fn new_tcp_address(&mut self, addr: &str) {
-        let tcp_address = ListenerAddress::Tcp(addr.to_string());
-        self.address_stack.push(tcp_address);
-    }
-
-    // add unix socket path to network list
-    pub fn new_unix_path(&mut self, path: &str) {
-        let unix_path = ListenerAddress::Unix(path.to_string());
-        self.address_stack.push(unix_path);
-    }
-}
-
 // used to build service
 // each service can serve on multiple network
 // many service is served to the main server
 pub struct Service<A> {
-    name: String,
-    service: A,
-    network: NetworkStack,
-    stream_session: StreamManager,
+    pub name: String,
+    pub service: A,
+    pub address_stack: Vec<ListenerAddress>,
+    pub stream_session: StreamManager,
 }
 
 // service implementation mainly for managing service
@@ -56,25 +30,21 @@ impl<A> Service<A> {
         Service {
             name: name.to_string(),
             service: service_type,
-            network: NetworkStack::new(),
+            address_stack: Vec::new(),
             stream_session: StreamManager::new(None),
         }
     }
 
     // add new tcp address to service
-    pub fn add_tcp_network(&mut self, address: &str) {
-        self.network.new_tcp_address(address);
+    pub fn add_tcp(&mut self, address: &str, config: Option<TcpListenerConfig>) {
+        let tcp_address = ListenerAddress::Tcp(address.to_string(), config);
+        self.address_stack.push(tcp_address);
     }
 
     // add new unix socket path to service
-    pub fn add_unix_socket(&mut self, path: &str) {
-        self.network.new_unix_path(path);
-    }
-
-    // this is probably getting rid soon,
-    // just some temporary to get things working
-    pub fn get_address_stack(&self) -> Vec<ListenerAddress> {
-        self.network.address_stack.clone()
+    pub fn add_unix(&mut self, path: &str, perms: Option<Permissions>) {
+        let unix_path = ListenerAddress::Unix(path.to_string(), perms);
+        self.address_stack.push(unix_path);
     }
 }
 
@@ -82,12 +52,12 @@ impl<A> Service<A> {
 impl<A: ServiceType + Send + Sync + 'static> Service<A> {
     // for starting up service
     pub async fn start_service(self: &Arc<Self>, address_stack: Vec<ListenerAddress>) {
-        let handlers = address_stack.into_iter().map(|network| {
+        let handlers = address_stack.into_iter().map(|address| {
             // cloning the arc self is used to keep sharing reference in multithread.
             // same as any method that calls self
             let service = Arc::clone(self);
             tokio::spawn(async move {
-                service.run_service(network).await;
+                service.run_service(address).await;
             })
         });
         future::join_all(handlers).await;
@@ -131,6 +101,7 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
             "node 1",
             &self.name,
             address,
+            None,
             None,
         );
 

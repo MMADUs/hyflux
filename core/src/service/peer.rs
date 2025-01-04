@@ -1,6 +1,15 @@
+use crate::listener::sys::TcpKeepAliveConfig;
 use crate::{listener::socket::SocketAddress, pool::pool::ConnectionGroupID};
 use ahash::AHasher;
 use std::hash::{Hash, Hasher};
+
+#[derive(Clone, Debug, Default)]
+pub struct TcpUpstreamConfig {
+    pub tcp_fast_open: bool,
+    pub tcp_keepalive: Option<TcpKeepAliveConfig>,
+    pub tcp_recv_buf: Option<usize>,
+    pub dscp: Option<u8>,
+}
 
 // upstream peer is a metadata for upstream servers
 // storing information for server peer
@@ -9,6 +18,7 @@ pub struct UpstreamPeer {
     pub service: String,
     pub address: SocketAddress,
     pub connection_timeout: Option<usize>,
+    pub tcp_config: Option<TcpUpstreamConfig>,
 }
 
 impl UpstreamPeer {
@@ -18,12 +28,14 @@ impl UpstreamPeer {
         service: &str,
         socket_address: SocketAddress,
         timeout: Option<usize>,
+        tcp_socket_config: Option<TcpUpstreamConfig>,
     ) -> Self {
         UpstreamPeer {
             name: name.to_string(),
             service: service.to_string(),
             address: socket_address,
             connection_timeout: timeout,
+            tcp_config: tcp_socket_config,
         }
     }
 
