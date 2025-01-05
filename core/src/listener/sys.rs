@@ -179,9 +179,9 @@ pub fn set_bind_address_no_port(fd: RawFd, enable: bool) -> io::Result<()> {
 }
 
 // set local port range
-pub fn ip_local_port_range(fd: RawFd, low: u16, high: u16) -> io::Result<()> {
+pub fn set_local_port_range(fd: RawFd, min: u16, max: u16) -> io::Result<()> {
     const IP_LOCAL_PORT_RANGE: i32 = 51;
-    let range: u32 = (low as u32) | ((high as u32) << 16);
+    let range: u32 = (min as u32) | ((max as u32) << 16);
 
     let result = set_socket_option(fd, libc::IPPROTO_IP, IP_LOCAL_PORT_RANGE, &(range as c_int));
     match result {

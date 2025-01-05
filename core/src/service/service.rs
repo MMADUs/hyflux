@@ -1,6 +1,6 @@
 use futures::future;
-use std::sync::Arc;
 use std::fs::Permissions;
+use std::sync::Arc;
 
 use crate::listener::listener::{ListenerAddress, Socket, TcpListenerConfig};
 use crate::listener::socket::SocketAddress;
@@ -97,13 +97,7 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
         let address = SocketAddress::parse_tcp("127.0.0.1:8000");
 
         // simulate a given backend peer
-        let peer = UpstreamPeer::new(
-            "node 1",
-            &self.name,
-            address,
-            None,
-            None,
-        );
+        let peer = UpstreamPeer::new("node 1", &self.name, address);
 
         // get upstream connection
         let upstream = match self.stream_session.get_connection_from_pool(&peer).await {
@@ -114,7 +108,7 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
                     println!("connection does not exist in pool, new stream created");
                 }
                 upstream
-            },
+            }
             Err(_) => panic!("error getting stream from pool"),
         };
 
@@ -125,7 +119,9 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
         };
 
         // return upstream to pool
-        self.stream_session.return_connection_to_pool(upstream, &peer).await;
+        self.stream_session
+            .return_connection_to_pool(upstream, &peer)
+            .await;
         println!("upstream connection returned");
     }
 }

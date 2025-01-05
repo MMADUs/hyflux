@@ -6,9 +6,9 @@ use tokio::sync::Mutex;
 use std::os::unix::io::AsRawFd;
 
 use crate::listener::socket::SocketAddress;
-use crate::listener::sys::{set_dscp, set_recv_buf, set_tcp_fastopen_connect};
+use crate::listener::sys::{set_bind_address_no_port, set_dscp, set_local_port_range, set_recv_buf, set_tcp_fastopen_connect};
 use crate::pool::pool::{ConnectionMetadata, ConnectionPool};
-use crate::service::peer::UpstreamPeer;
+use crate::service::peer::{UpstreamPeer, Range};
 use crate::stream::{stream::Stream, types::StreamType};
 
 // the stream manager is used as the bridge from request lifetime to connection pool
@@ -59,9 +59,28 @@ impl StreamManager {
                 } else {
                     TcpSocket::new_v6()
                 }?;
+                let fd = socket.as_raw_fd();
+                // set bind address without port
+                if let Err(e) = set_bind_address_no_port(fd, true) {
+                    panic!("error set bind address no port: {}", e);
+                }
+                // apply tcp bind options
+                if let Some(bind_to) = &peer.tcp_bind {
+                    // set port range
+                    if let Some(Range(min, max)) = bind_to.port_range {
+                        if let Err(e) = set_local_port_range(fd, min, max) {
+                            panic!("error set local port range tcp bind: {e}");
+                        }
+                    }
+                    // bind address to socket address
+                    if let Some(address) = bind_to.address {
+                        if let Err(e) = socket.bind(address) {
+                            panic!("error bind tcp socket address: {e}");
+                        }
+                    }
+                }
                 // apply socket config
                 if let Some(config) = &peer.tcp_config {
-                    let fd = socket.as_raw_fd();
                     // set tcp fastopen
                     if config.tcp_fast_open {
                         if let Err(e) = set_tcp_fastopen_connect(fd) {
