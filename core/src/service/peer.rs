@@ -1,5 +1,6 @@
-use crate::listener::sys::TcpKeepAliveConfig;
-use crate::{listener::socket::SocketAddress, pool::pool::ConnectionGroupID};
+use crate::network::socket::SocketAddress;
+use crate::network::sockopt::TcpKeepAliveConfig;
+use crate::pool::pool::ConnectionGroupID;
 use ahash::AHasher;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr as StdSockAddr;

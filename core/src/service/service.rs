@@ -2,9 +2,9 @@ use futures::future;
 use std::fs::Permissions;
 use std::sync::Arc;
 
-use crate::listener::listener::{ListenerAddress, Socket, TcpListenerConfig};
-use crate::listener::socket::SocketAddress;
-use crate::pool::stream::StreamManager;
+use crate::network::listener::{ListenerAddress, TcpListenerConfig};
+use crate::network::socket::SocketAddress;
+use crate::pool::manager::StreamManager;
 use crate::service::peer::UpstreamPeer;
 use crate::stream::stream::Stream;
 
@@ -91,7 +91,7 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
     }
 
     // handling incoming request to here
-    async fn handle_connection(self: &Arc<Self>, downstream: Stream, _socket_address: Socket) {
+    async fn handle_connection(self: &Arc<Self>, downstream: Stream, _socket_address: SocketAddress) {
         println!("some message!: {}", self.service.say_hi());
 
         let address = SocketAddress::parse_tcp("127.0.0.1:8000");

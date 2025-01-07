@@ -5,7 +5,7 @@ use tokio::io::{self, AsyncRead, AsyncWrite, BufStream, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::UnixStream;
 
-use crate::listener::sys::{set_tcp_keepalive, TcpKeepAliveConfig};
+use crate::network::sockopt::{set_tcp_keepalive, TcpKeepAliveConfig};
 use crate::pool::pool::ConnectionID;
 use crate::stream::{duration::AccumulatedDuration, raw::RawStream, traits::UniqueID};
 

@@ -1,3 +1,20 @@
+//! Copyright (c) 2024-2025 Hyflux, Inc.
+//!
+//! This file is part of Hyflux
+//!
+//! This program is free software: you can redistribute it and/or modify
+//! it under the terms of the GNU Affero General Public License as published by
+//! the Free Software Foundation, either version 3 of the License, or
+//! (at your option) any later version.
+//!
+//! This program is distributed in the hope that it will be useful
+//! but WITHOUT ANY WARRANTY; without even the implied warranty of
+//! MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//! GNU Affero General Public License for more details.
+//!
+//! You should have received a copy of the GNU Affero General Public License
+//! along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -8,17 +25,15 @@ use parking_lot::RwLock;
 use thread_local::ThreadLocal;
 use tokio::sync::Notify;
 
-// the connection node represents the connection value in lru
-// its the value type for the cache
-// the value consist the connection metadata & the notifier
-// notifier is used to notify the main connection pool when the connection in lru gets evicted
+/// connection value in lru
 pub struct ConnectionNode<M> {
+    /// notifier is used to notify the main connection pool when the connection in lru gets evicted
     pub removal_notifier: Arc<Notify>,
     pub metadata: M,
 }
 
 impl<M> ConnectionNode<M> {
-    // create a new conenction node
+    /// new conenction node
     pub fn new(connection_metadata: M) -> Self {
         ConnectionNode {
             removal_notifier: Arc::new(Notify::new()),
@@ -26,29 +41,24 @@ impl<M> ConnectionNode<M> {
         }
     }
 
-    // this method is used to notify during removal
-    // the notification triggers when the node is removed
+    /// used to notify when the node is being removed
     pub fn notify_removal(&self) {
         self.removal_notifier.notify_one();
     }
 }
 
-// the connection lru is the main lru storage
-// it stores all the connection metadata in lru cache
-// lru were able to evict the oldest connection when it hits the size limit
-// the generics U: type for connection unique id
-// the generics M: type for connection metadata
+/// the connection lru storage
+/// lru were able to evict the oldest connection when it hits the size limit
 pub struct ConnectionLru<U, M>
 where
-    U: Send,
-    M: Send,
+    U: Send, // unique id
+    M: Send, // metadata
 {
-    // the data store for all lru data
+    /// the data stored for all lru data
     lru_store: RwLock<ThreadLocal<RefCell<LruCache<U, ConnectionNode<M>>>>>,
-    // stores the lru maxium capacity size
+    /// stores the lru maxium capacity size
     size_capacity: usize,
-    // the drain status flag is used when draining is on process
-    // used atomic bool for thread safe bool
+    /// the drain status flag is used when draining is on process
     drain_status_flag: AtomicBool,
 }
 
@@ -57,8 +67,7 @@ where
     U: Hash + Eq + Send,
     M: Send,
 {
-    // new lru storage instance
-    // by default the drain status flag is false
+    /// new lru storage instance
     pub fn new(lru_size: usize) -> Self {
         ConnectionLru {
             lru_store: RwLock::new(ThreadLocal::new()),
@@ -67,8 +76,7 @@ where
         }
     }
 
-    // add a new connection to the lru
-    // the new connection will create a new node for the metadata
+    /// add a new connection to the lru
     pub fn add_new_connection(
         &self,
         connection_unique_id: U,
@@ -80,12 +88,11 @@ where
         let notifier = connection_node.removal_notifier.clone();
         // insert key and node to the lru store
         let new_metadata = self.insert_connection(connection_unique_id, connection_node);
-        // return the new connection metadata and the removal notifier
         (notifier, new_metadata)
     }
 
-    // insert a node in and return the meta of the replaced node
-    // any node with existed key in lru, will be updated to the latest inserted value
+    /// insert a node in and return the meta of the replaced node
+    /// any node with existed key in lru, will be updated to the latest inserted value
     pub fn insert_connection(
         &self,
         connection_unique_id: U,
@@ -126,7 +133,7 @@ where
         None
     }
 
-    // used to pop out connection from the lru
+    /// pop out connection from the lru
     pub fn pop_connection(&self, connection_unique_id: &U) -> Option<ConnectionNode<M>> {
         // acquire read lock
         let lru = self.lru_store.read();
@@ -138,8 +145,7 @@ where
         lru_cache.pop(connection_unique_id)
     }
 
-    // used to drain all the connections inside lru
-    // this will entirely clear all connections
+    /// drain all the connections inside lru
     pub fn drain_connections(&self) {
         // set the drain status flag to true
         // this was used to prevent any new inserted connection while draining is in process

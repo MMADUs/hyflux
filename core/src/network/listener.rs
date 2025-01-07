@@ -16,25 +16,16 @@
 //! along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::fs::{self, Permissions};
-use std::net::{SocketAddr as StdSocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
+use std::net::{SocketAddr as StdSocketAddr, ToSocketAddrs};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
-use tokio::net::unix::SocketAddr as UnixSocketAddr;
 use tokio::net::TcpSocket;
 use tokio::net::{TcpListener, UnixListener};
 
 use crate::stream::{stream::Stream, types::StreamType};
 
+use super::socket::SocketAddress;
 use super::sockopt::{set_dscp, set_tcp_fastopen_backlog, TcpKeepAliveConfig};
-
-/// TODO: remove this in further implementation
-pub trait DynSocketAddr: Send + Sync {}
-
-impl DynSocketAddr for UnixSocketAddr {}
-impl DynSocketAddr for SocketAddrV4 {}
-impl DynSocketAddr for SocketAddrV6 {}
-
-pub type Socket = Box<dyn DynSocketAddr>;
 
 /// NOTE: currently only used for unix listener
 const LISTENER_BACKLOG: u32 = 65535;
@@ -88,82 +79,71 @@ impl ListenerAddress {
                         Some(address) => address,
                         None => panic!("could not resolve address"),
                     },
-                    Err(e) => panic!("{}", e),
+                    Err(e) => panic!("error parsing socket address: {e}"),
                 };
-                // identify socket address as ip
+                // identify socket address ip
                 let tcp_socket = match socket_address {
                     StdSocketAddr::V4(_) => TcpSocket::new_v4(),
                     StdSocketAddr::V6(_) => TcpSocket::new_v6(),
-                };
-                let tcp_socket = match tcp_socket {
-                    Ok(socket) => socket,
-                    Err(e) => panic!("{}", e),
-                };
+                }
+                .expect("unable to parse TCP socket");
                 // tcp socket reuseaddr is enabled by default
                 // this makes a listener with the same address in a TIME_WAIT
-                if let Err(e) = tcp_socket.set_reuseaddr(true) {
-                    panic!("{}", e);
-                }
+                tcp_socket
+                    .set_reuseaddr(true)
+                    .expect("unable to set listener socket reuse address");
                 // apply socket options
                 if let Some(config) = socket_conf {
                     let raw_fd = tcp_socket.as_raw_fd();
                     // check if only ipv6
                     if let Some(flag) = config.ipv6_only {
                         let socket_ref = socket2::SockRef::from(&tcp_socket);
-                        if let Err(e) = socket_ref.set_only_v6(flag) {
-                            panic!("failed to set ipv6 only: {}", e);
-                        }
+                        socket_ref
+                            .set_only_v6(flag)
+                            .expect("unable to set ipv6 only");
                     }
                     // set tcp fast open
                     if let Some(value) = config.tcp_fastopen {
-                        if let Err(e) = set_tcp_fastopen_backlog(raw_fd, value) {
-                            panic!("error unable to set tcp fastopen backlog: {}", e);
-                        }
+                        set_tcp_fastopen_backlog(raw_fd, value)
+                            .expect("unable to set listener socket fastopen backlog");
                     }
                     // set dscp
                     if let Some(value) = config.dscp {
-                        if let Err(e) = set_dscp(raw_fd, value) {
-                            panic!("error unable to set dscp: {}", e);
-                        }
+                        set_dscp(raw_fd, value).expect("unable to set listener socket dscp");
                     }
                 }
-                // bind tcp socket to the socket address
-                if let Err(e) = tcp_socket.bind(socket_address) {
-                    panic!("{}", e);
-                }
+                // bind address to socket
+                tcp_socket
+                    .bind(socket_address)
+                    .expect("unable to bind address to socket");
                 // listen to tcp socket
                 tcp_socket
                     .listen(LISTENER_BACKLOG)
                     .map(Listener::from)
-                    .unwrap_or_else(|e| panic!("{}", e))
+                    .unwrap_or_else(|e| panic!("TCP socket unable to listen: {e}"))
             }
             Self::Unix(path, permission) => {
                 // remove existing socket path
-                match std::fs::remove_file(path) {
-                    Ok(()) => (),
-                    Err(e) => panic!("{}", e),
-                }
+                std::fs::remove_file(path)
+                    .unwrap_or_else(|e| panic!("unable to remove unix file: {e}"));
                 // new unix listener
-                let unix_listener = match UnixListener::bind(path) {
-                    Ok(listener) => listener,
-                    Err(e) => panic!("{}", e),
-                };
+                let unix_listener = UnixListener::bind(path)
+                    .unwrap_or_else(|e| panic!("unable to bind unix listener: {e}"));
                 // set socket perms read/write permissions for all users on the socket by default
                 let perms = permission.clone().unwrap_or(Permissions::from_mode(0o666));
                 if let Err(e) = fs::set_permissions(path, perms) {
                     panic!("setting up path {}, set permission error: {}", path, e);
                 }
                 // convert tokio unix listener to std listener
-                let std_listener = match unix_listener.into_std() {
-                    Ok(std) => std,
-                    Err(e) => panic!("{}", e),
-                };
+                let std_listener = unix_listener
+                    .into_std()
+                    .expect("unable to convert unix listener");
                 // get unix std listener socket
                 let socket: socket2::Socket = std_listener.into();
-                // set listener backlog
-                if let Err(e) = socket.listen(LISTENER_BACKLOG as i32) {
-                    panic!("{}", e);
-                }
+                // listen to socket with backlog
+                socket
+                    .listen(LISTENER_BACKLOG as i32)
+                    .unwrap_or_else(|e| panic!("Unix socket unable to listen: {e}"));
                 // convert back to tokio unix listener
                 UnixListener::from_std(socket.into())
                     .map(Listener::from)
@@ -201,16 +181,12 @@ pub struct ServiceEndpoint {
 
 impl ServiceEndpoint {
     /// this is called to accept incoming client request
-    /// TODO: get rid of the socket in result & digest it instead.
-    pub async fn accept_stream(&self) -> Result<(Stream, Socket), ()> {
+    pub async fn accept_stream(&self) -> Result<(Stream, SocketAddress), ()> {
         match &self.listener {
             Listener::Tcp(tcp_listener) => match tcp_listener.accept().await {
-                Ok((tcp_downstream, socket_addr)) => {
-                    let socket_address: Socket = match socket_addr {
-                        StdSocketAddr::V4(addr) => Box::new(addr),
-                        StdSocketAddr::V6(addr) => Box::new(addr),
-                    };
-                    // parsing tcp stream to dynamic stream concrete type
+                Ok((tcp_downstream, address)) => {
+                    // type parsing
+                    let socket_address = SocketAddress::Tcp(address);
                     let mut stream_type = StreamType::from(tcp_downstream);
                     // set nodelay by default
                     stream_type.set_no_delay();
@@ -224,9 +200,8 @@ impl ServiceEndpoint {
                             }
                             // set dscp
                             if let Some(value) = &config.dscp {
-                                if let Err(e) = set_dscp(raw_fd, *value) {
-                                    panic!("failed to set dscp: {}", e);
-                                }
+                                set_dscp(raw_fd, *value)
+                                    .expect("unable to set listener socket dscp");
                             }
                         }
                     }
@@ -234,20 +209,20 @@ impl ServiceEndpoint {
                     Ok((dyn_stream_type, socket_address))
                 }
                 Err(e) => {
-                    println!("unable to accept downstream connection: {}", e);
+                    println!("unable to accept downstream connection: {e}");
                     Err(())
                 }
             },
             Listener::Unix(unix_listener) => match unix_listener.accept().await {
-                Ok((unix_downstream, socket_addr)) => {
-                    let socket_address: Socket = Box::new(socket_addr);
-                    // parsing unix stream to dynamic stream concrete type
+                Ok((unix_downstream, address)) => {
+                    // type parsing
+                    let socket_address = SocketAddress::Unix(address.into());
                     let stream_type = StreamType::from(unix_downstream);
                     let dyn_stream_type: Stream = Box::new(stream_type);
                     Ok((dyn_stream_type, socket_address))
                 }
                 Err(e) => {
-                    print!("unable to accept downstream connection: {}", e);
+                    println!("unable to accept downstream connection: {e}");
                     Err(())
                 }
             },
