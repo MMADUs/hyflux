@@ -1,9 +1,27 @@
+//! Copyright (c) 2024-2025 Hyflux, Inc.
+//!
+//! This file is part of Hyflux
+//!
+//! This program is free software: you can redistribute it and/or modify
+//! it under the terms of the GNU Affero General Public License as published by
+//! the Free Software Foundation, either version 3 of the License, or
+//! (at your option) any later version.
+//!
+//! This program is distributed in the hope that it will be useful
+//! but WITHOUT ANY WARRANTY; without even the implied warranty of
+//! MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//! GNU Affero General Public License for more details.
+//!
+//! You should have received a copy of the GNU Affero General Public License
+//! along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use nix::sys::socket::{getpeername, getsockname, SockaddrStorage};
-use std::net::SocketAddr as StdSockAddr;
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr as StdSockAddr;
 use std::os::unix::net::SocketAddr as StdUnixSockAddr;
 use std::str::FromStr;
 
+/// type used for socket address
 #[derive(Debug, Clone)]
 pub enum SocketAddress {
     Tcp(StdSockAddr),
@@ -11,6 +29,7 @@ pub enum SocketAddress {
 }
 
 impl SocketAddress {
+    /// make tcp socket address from string
     pub fn parse_tcp(raw: &str) -> Self {
         match StdSockAddr::from_str(raw) {
             Ok(address) => SocketAddress::Tcp(address),
@@ -18,6 +37,7 @@ impl SocketAddress {
         }
     }
 
+    /// make unix socket address from string
     pub fn parse_unix(raw: &str) -> Self {
         match StdUnixSockAddr::from_pathname(raw) {
             Ok(path) => SocketAddress::Unix(path),
@@ -25,6 +45,7 @@ impl SocketAddress {
         }
     }
 
+    /// extract tcp socket address from the type
     pub fn as_tcp(&self) -> Option<&StdSockAddr> {
         if let SocketAddress::Tcp(address) = self {
             Some(address)
@@ -33,6 +54,7 @@ impl SocketAddress {
         }
     }
 
+    /// extract unix socket address from the type
     pub fn as_unix(&self) -> Option<&StdUnixSockAddr> {
         if let SocketAddress::Unix(address) = self {
             Some(address)
@@ -41,12 +63,14 @@ impl SocketAddress {
         }
     }
 
+    /// set the port if socket address is tcp
     pub fn set_port(&mut self, port: u16) {
         if let SocketAddress::Tcp(address) = self {
             address.set_port(port);
         }
     }
 
+    /// storages correspond to query for socket addresses
     fn from_storage(sock: &SockaddrStorage) -> Option<SocketAddress> {
         // check for ipv4 & ipv6
         if let Some(v4) = sock.as_sockaddr_in() {
@@ -68,6 +92,7 @@ impl SocketAddress {
         Some(address)
     }
 
+    /// get the socket address type by the given fd (file descriptors)
     pub fn from_raw_fd(fd: std::os::unix::io::RawFd, peer_address: bool) -> Option<SocketAddress> {
         // get address from fd
         let storage = if peer_address {
@@ -84,10 +109,10 @@ impl SocketAddress {
 }
 
 impl Hash for SocketAddress {
+    /// implementation for address hashing
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             Self::Tcp(sockaddr) => sockaddr.hash(state),
-            #[cfg(unix)]
             Self::Unix(sockaddr) => {
                 if let Some(path) = sockaddr.as_pathname() {
                     // use the underlying path as the hash

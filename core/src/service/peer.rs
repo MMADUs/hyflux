@@ -72,11 +72,7 @@ pub struct UpstreamPeer {
 
 impl UpstreamPeer {
     // new upstream peer
-    pub fn new(
-        name: &str,
-        service: &str,
-        socket_address: SocketAddress,
-    ) -> Self {
+    pub fn new(name: &str, service: &str, socket_address: SocketAddress) -> Self {
         UpstreamPeer {
             name: name.to_string(),
             service: service.to_string(),

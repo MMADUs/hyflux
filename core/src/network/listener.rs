@@ -1,3 +1,20 @@
+//! Copyright (c) 2024-2025 Hyflux, Inc.
+//!
+//! This file is part of Hyflux
+//!
+//! This program is free software: you can redistribute it and/or modify
+//! it under the terms of the GNU Affero General Public License as published by
+//! the Free Software Foundation, either version 3 of the License, or
+//! (at your option) any later version.
+//!
+//! This program is distributed in the hope that it will be useful
+//! but WITHOUT ANY WARRANTY; without even the implied warranty of
+//! MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//! GNU Affero General Public License for more details.
+//!
+//! You should have received a copy of the GNU Affero General Public License
+//! along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use std::fs::{self, Permissions};
 use std::net::{SocketAddr as StdSocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 use std::os::unix::fs::PermissionsExt;
@@ -8,10 +25,9 @@ use tokio::net::{TcpListener, UnixListener};
 
 use crate::stream::{stream::Stream, types::StreamType};
 
-use super::sys::TcpKeepAliveConfig;
-use super::sys::{set_dscp, set_tcp_fastopen_backlog};
+use super::sockopt::{set_dscp, set_tcp_fastopen_backlog, TcpKeepAliveConfig};
 
-// generic stuff to make the accept implementation working somehow
+/// TODO: remove this in further implementation
 pub trait DynSocketAddr: Send + Sync {}
 
 impl DynSocketAddr for UnixSocketAddr {}
@@ -20,10 +36,10 @@ impl DynSocketAddr for SocketAddrV6 {}
 
 pub type Socket = Box<dyn DynSocketAddr>;
 
-// currently applied for unix
+/// NOTE: currently only used for unix listener
 const LISTENER_BACKLOG: u32 = 65535;
 
-// tcp socket listener config
+/// Tcp socket listener configuration
 #[derive(Clone, Debug, Default)]
 pub struct TcpListenerConfig {
     /// IPV6_ONLY flag (if true, limit socket to IPv6 communication only).
@@ -32,12 +48,14 @@ pub struct TcpListenerConfig {
     pub ipv6_only: Option<bool>,
     pub tcp_fastopen: Option<usize>,
     pub tcp_keepalive: Option<TcpKeepAliveConfig>,
-    /// (Diffrentiated Service Code Point)
+    /// dscp (Diffrentiated Service Code Point)
+    /// This used to classify and manage network traffic priority.
     pub dscp: Option<u8>,
 }
 
-// listener address is a choice
-// wether to use tcp or unix, and will be bind by the implementation
+/// Listener address is the identity itself
+/// stores the address & configuration
+/// address is a type of string, will be parsed to socket address
 #[derive(Clone)]
 pub enum ListenerAddress {
     Tcp(String, Option<TcpListenerConfig>),
@@ -45,6 +63,13 @@ pub enum ListenerAddress {
 }
 
 impl ListenerAddress {
+    /// this is called to bind the Listener
+    ///
+    /// # Listener generation flow
+    /// * set a new `ListenerAddress`
+    /// * bind listener with the given `ListenerAddress`
+    /// * received the `Listener` type
+    /// * wraps result into `ServiceEndpoint`
     pub async fn bind_to_listener(self) -> ServiceEndpoint {
         let listener = self.bind().await;
         ServiceEndpoint {
@@ -53,6 +78,7 @@ impl ListenerAddress {
         }
     }
 
+    /// bind logic
     async fn bind(&self) -> Listener {
         match self {
             Self::Tcp(address, socket_conf) => {
@@ -147,9 +173,7 @@ impl ListenerAddress {
     }
 }
 
-// the main listener type
-// the listener is returned right after binding connection stream
-// any implementation here is used for any event after connection established
+/// the main listener type
 #[derive(Debug)]
 pub enum Listener {
     Tcp(TcpListener),
@@ -168,12 +192,16 @@ impl From<UnixListener> for Listener {
     }
 }
 
+/// the service endpoint type
+/// the type is received after a successful listener bind
 pub struct ServiceEndpoint {
     address: ListenerAddress,
     listener: Listener,
 }
 
 impl ServiceEndpoint {
+    /// this is called to accept incoming client request
+    /// TODO: get rid of the socket in result & digest it instead.
     pub async fn accept_stream(&self) -> Result<(Stream, Socket), ()> {
         match &self.listener {
             Listener::Tcp(tcp_listener) => match tcp_listener.accept().await {
