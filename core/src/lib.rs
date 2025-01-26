@@ -5,6 +5,7 @@ pub mod pool;
 pub mod stream;
 pub mod prelude;
 pub mod session;
+pub mod upstream;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

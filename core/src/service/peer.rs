@@ -62,6 +62,7 @@ pub struct TcpUpstreamConfig {
 
 // upstream peer is a metadata for upstream servers
 // storing information for server peer
+#[derive(Clone, Debug)]
 pub struct UpstreamPeer {
     pub name: String,
     pub service: String,
