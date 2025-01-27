@@ -15,8 +15,22 @@
 //! You should have received a copy of the GNU Affero General Public License
 //! along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod backend;
-pub mod discovery;
-pub mod health;
-pub mod lb;
-pub mod selection;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::upstream::{lb::SelectionAlgorithm, selection::weighted::Weighted};
+
+/// the selection type for round robin
+pub struct RoundRobinSelection (AtomicUsize);
+
+impl SelectionAlgorithm for RoundRobinSelection {
+    fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    fn next(&self, _key: &[u8]) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed) as u64
+    }
+}
+
+/// the round robin algorithm
+pub type RoundRobin = Weighted<RoundRobinSelection>;

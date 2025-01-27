@@ -16,6 +16,7 @@
 //! along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use nix::sys::socket::{getpeername, getsockname, SockaddrStorage};
+use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr as StdSockAddr;
 use std::os::unix::net::SocketAddr as StdUnixSockAddr;
@@ -122,6 +123,51 @@ impl Hash for SocketAddress {
                     // abstract UDS name not yet exposed by std API
                     // panic for now, we can decide on the right way to hash them later
                     panic!("Unnamed and abstract UDS types not yet supported for hashing")
+                }
+            }
+        }
+    }
+}
+
+impl PartialEq for SocketAddress {
+    /// implementation for address partial equality
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Self::Tcp(addr) => Some(addr) == other.as_tcp(),
+            Self::Unix(addr) => {
+                let path = addr.as_pathname();
+                path.is_some() && path == other.as_unix().and_then(|addr| addr.as_pathname())
+            }
+        }
+    }
+}
+
+/// implementation for strict address equality
+impl Eq for SocketAddress {}
+
+impl PartialOrd for SocketAddress {
+    /// implementation for address partial ordering
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SocketAddress {
+    /// implementation for ordering in a collections
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self {
+            Self::Tcp(addr) => {
+                if let Some(o) = other.as_tcp() {
+                    addr.cmp(o)
+                } else {
+                    Ordering::Less
+                }
+            }
+            Self::Unix(addr) => {
+                if let Some(o) = other.as_unix() {
+                    addr.as_pathname().cmp(&o.as_pathname())
+                } else {
+                    Ordering::Greater
                 }
             }
         }
