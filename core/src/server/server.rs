@@ -16,12 +16,12 @@
 //! along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use dotenv::dotenv;
+use nix::Error as NixError;
 use std::sync::Arc;
 use tokio::runtime::{Builder, Handle};
 use tokio::signal::unix;
 use tokio::sync::{watch, Mutex};
 use tokio::time::{sleep, Duration};
-use nix::{Error as NixError, NixPath};
 use tracing::{error, info};
 
 use crate::service::service::{Service, ServiceType};
@@ -80,7 +80,7 @@ pub struct Server<A> {
 }
 
 impl<A: ServiceType + Send + Sync + 'static> Server<A> {
-    /// new server instance
+    /// build the server
     pub fn new() -> Self {
         let (send, recv) = watch::channel(false);
         Server {
@@ -98,7 +98,7 @@ impl<A: ServiceType + Send + Sync + 'static> Server<A> {
         self.upgrade = enabled;
         if self.upgrade {
             let mut fds = ListenerFd::new();
-            fds.get_from_socket(path)?;
+            fds.get_fds(path)?;
             self.listener_fd = Some(Arc::new(Mutex::new(fds)));
         } else {
             self.listener_fd = None;
@@ -128,9 +128,14 @@ impl<A: ServiceType + Send + Sync + 'static> Server<A> {
         // running runtimes
         let mut runtimes: Vec<Runtime> = Vec::new();
         while let Some(service) = self.services.pop() {
-            // example threads, make it dynamic later
+            // TODO: make the allocated threads dynamic later
             let alloc_threads = 10;
-            let runtime = Self::run_service(service, alloc_threads);
+            let runtime = Self::run_service(
+                service,
+                alloc_threads,
+                self.listener_fd.clone(),
+                self.shutdown_recv.clone(),
+            );
             runtimes.push(runtime);
         }
         // the main server runtime
@@ -146,16 +151,21 @@ impl<A: ServiceType + Send + Sync + 'static> Server<A> {
     }
 
     /// run every service in the server
-    fn run_service(service: Service<A>, alloc_threads: usize) -> Runtime {
-        // run each listener service on top of the runtime
+    fn run_service(
+        service: Service<A>,
+        alloc_threads: usize,
+        listener_fd: Option<Arc<Mutex<ListenerFd>>>,
+        shutdown_notifier: watch::Receiver<bool>,
+    ) -> Runtime {
+        // a runtime is needed to run all the services
         let runtime = Runtime::new("service-runtime", alloc_threads);
         let address_stack = service.address_stack.clone();
-        // wrap the service into Arc
-        // this service will be handled across threads.
+        // this service will be handled concurrently across threads
         let service = Arc::new(service);
         runtime.handle_work().spawn(async move {
-            // run the async service here
-            service.start_service(address_stack).await;
+            service
+                .start_service(address_stack, listener_fd, shutdown_notifier)
+                .await;
         });
         runtime
     }
@@ -173,7 +183,7 @@ impl<A: ServiceType + Send + Sync + 'static> Server<A> {
                 if let Some(fds) = &self.listener_fd {
                     // send every current fd to a new listener
                     let fds = fds.lock().await;
-                    match fds.send_to_socket("") {
+                    match fds.send_fds("/tmp/fds.sock") {
                         Ok(_) => {
                             info!("listener socket sent");
                         }

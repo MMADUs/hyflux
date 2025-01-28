@@ -16,9 +16,12 @@
 //! along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::fs::{self, Permissions};
-use std::net::{SocketAddr as StdSocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr as StdSocketAddr, TcpStream, ToSocketAddrs};
+use std::os::fd::FromRawFd;
+use std::os::unix::io::RawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::net::UnixListener as StdUnixListener;
 use tokio::net::TcpSocket;
 use tokio::net::{TcpListener, UnixListener};
 
@@ -61,16 +64,67 @@ impl ListenerAddress {
     /// * bind listener with the given `ListenerAddress`
     /// * received the `Listener` type
     /// * wraps result into `ServiceEndpoint`
-    pub async fn bind_to_listener(self) -> ServiceEndpoint {
-        let listener = self.bind().await;
+    pub async fn bind_to_listener(self, listener_fd: Option<&RawFd>) -> ServiceEndpoint {
+        let listener = match listener_fd {
+            Some(fd) => {
+                self.from_fd(fd)
+            }
+            None => {
+                self.from_address().await
+            }
+        };
         ServiceEndpoint {
             address: self,
             listener,
         }
     }
 
-    /// bind logic
-    async fn bind(&self) -> Listener {
+    /// get the string address from the listener address
+    pub fn get_address(&self) -> &str {
+        match &self {
+            Self::Tcp(addr, _) => addr,
+            Self::Unix(addr, _) => addr,
+        }
+    }
+
+    /// bind address from file descriptor
+    fn from_fd(&self, fd: &RawFd) -> Listener {
+        match self {
+            Self::Tcp(_, _) => {
+                let std_tcp = unsafe {
+                    TcpStream::from_raw_fd(*fd)
+                };
+                // build socket from std tcp stream
+                let tcp_socket = TcpSocket::from_std_stream(std_tcp);
+                tcp_socket.listen(LISTENER_BACKLOG)
+                    .map(Listener::from)
+                    .unwrap_or_else(|e| panic!("TCP socket unable to listen: {e}"))
+            }
+            Self::Unix(path, permission) => {
+                let std_unix = unsafe {
+                    StdUnixListener::from_raw_fd(*fd)
+                };
+                // set socket perms read/write permissions for all users on the socket by default
+                let perms = permission.clone().unwrap_or(Permissions::from_mode(0o666));
+                if let Err(e) = fs::set_permissions(path, perms) {
+                    panic!("setting up path {}, set permission error: {}", path, e);
+                }
+                // get unix std listener socket
+                let socket: socket2::Socket = std_unix.into();
+                // listen to socket with backlog
+                socket
+                    .listen(LISTENER_BACKLOG as i32)
+                    .unwrap_or_else(|e| panic!("Unix socket unable to listen: {e}"));
+                // convert back to tokio unix listener
+                UnixListener::from_std(socket.into())
+                    .map(Listener::from)
+                    .unwrap_or_else(|e| panic!("{}", e))
+            }
+        }
+    }
+
+    /// bind listener from listener address
+    async fn from_address(&self) -> Listener {
         match self {
             Self::Tcp(address, socket_conf) => {
                 // create socket address from string
@@ -175,8 +229,8 @@ impl From<UnixListener> for Listener {
 /// the service endpoint type
 /// the type is received after a successful listener bind
 pub struct ServiceEndpoint {
-    address: ListenerAddress,
-    listener: Listener,
+    pub address: ListenerAddress,
+    pub listener: Listener,
 }
 
 impl ServiceEndpoint {

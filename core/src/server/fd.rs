@@ -27,7 +27,7 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-/// a list of listener file descriptors
+/// list of generated listener file descriptors
 pub struct ListenerFd {
     fds: HashMap<String, RawFd>,
 }
@@ -41,22 +41,22 @@ impl ListenerFd {
     }
 
     /// add listener fd to list
-    pub fn add(&mut self, address: String, fd: RawFd) {
+    pub fn add_fd(&mut self, address: String, fd: RawFd) {
         self.fds.insert(address, fd);
     }
 
     /// get listener fd from list
-    pub fn get(&self, address: &str) -> Option<&RawFd> {
+    pub fn get_fd(&self, address: &str) -> Option<&RawFd> {
         self.fds.get(address)
     }
 
-    /// split both addresses and fds
-    pub fn serialize(&self) -> (Vec<String>, Vec<RawFd>) {
+    /// helper function to split both addresses and fds
+    fn serialize(&self) -> (Vec<String>, Vec<RawFd>) {
         self.fds.iter().map(|(k, v)| (k.clone(), v)).unzip()
     }
 
-    /// merge back address & fds to list
-    pub fn deserialize(&mut self, addresses: Vec<String>, fds: Vec<RawFd>) {
+    /// helper function to merge back address & fds to list
+    fn deserialize(&mut self, addresses: Vec<String>, fds: Vec<RawFd>) {
         if addresses.len() == fds.len() {
             for (addr, fd) in addresses.into_iter().zip(fds) {
                 self.fds.insert(addr, fd);
@@ -66,52 +66,64 @@ impl ListenerFd {
         }
     }
 
-    /// send the fds to the new process
-    pub fn send_to_socket<P>(&self, path: &P) -> Result<usize, NixError>
+    /// send the existing fds to new process
+    pub fn send_fds<P>(&self, path: &P) -> Result<usize, NixError>
     where
         P: ?Sized + NixPath + Display,
     {
+        // prepare metada & buffer
         let (addrs, fds) = self.serialize();
         let mut buffer: [u8; 2048] = [0; 2048];
-        let key_size = serialize_vec_string(&addrs, &mut buffer);
-        send_fds(fds, &buffer[..key_size], path)
+        // write keys to buffer
+        let key_size = serialize_keys(&addrs, &mut buffer);
+        // send to new process
+        send_to_process(fds, &buffer[..key_size], path)
     }
 
-    /// get all the fds from the current process
-    pub fn get_from_socket<P>(&mut self, path: &P) -> Result<(), NixError>
+    /// get all the generated a file descriptor
+    pub fn get_fds<P>(&mut self, path: &P) -> Result<(), NixError>
     where
         P: ?Sized + NixPath + Display,
     {
+        // prepare buffer
         let mut buffer: [u8; 2048] = [0; 2048];
-        let (fds, bytes) = get_fds(path, &mut buffer)?;
-        let keys = deserialize_vec_string(&buffer[..bytes])?;
+        // generate file descriptors
+        let (fds, bytes) = generate_fds(path, &mut buffer)?;
+        // parse key & store the generated fds
+        let keys = deserialize_keys(&buffer[..bytes])?;
         self.deserialize(keys, fds);
         Ok(())
     }
 }
 
-fn serialize_vec_string(vec_string: &[String], mut buffer: &mut [u8]) -> usize {
+/// helper function to serialize keys
+fn serialize_keys(vec_string: &[String], mut buffer: &mut [u8]) -> usize {
     let joined = vec_string.join(" ");
     buffer.write(joined.as_bytes()).unwrap()
 }
 
-fn deserialize_vec_string(buffer: &[u8]) -> Result<Vec<String>, NixError> {
+/// helper function to deserialize keys
+fn deserialize_keys(buffer: &[u8]) -> Result<Vec<String>, NixError> {
     let joined = std::str::from_utf8(buffer).map_err(|_| NixError::EINVAL)?;
     let str = joined.split_ascii_whitespace().map(String::from).collect();
     Ok(str)
 }
 
+/// the maximum retry
 const MAX_RETRY: usize = 5;
 
+/// the set interval between retries
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
-fn accept_with_retry(listen_fd: i32) -> Result<i32, NixError> {
-    let mut retried = 0;
+/// a helper function to accept the socket with retry
+fn accept_socket(listener_fd: i32) -> Result<i32, NixError> {
+    let mut retry = 0;
     loop {
-        match socket::accept(listen_fd) {
+        match socket::accept(listener_fd) {
             Ok(fd) => return Ok(fd),
             Err(e) => {
-                if retried > MAX_RETRY {
+                // do retry
+                if retry > MAX_RETRY {
                     return Err(e);
                 }
                 match e {
@@ -119,11 +131,11 @@ fn accept_with_retry(listen_fd: i32) -> Result<i32, NixError> {
                         error!(
                             "No incoming socket transfer, sleep {RETRY_INTERVAL:?} and try again"
                         );
-                        retried += 1;
+                        retry += 1;
                         thread::sleep(RETRY_INTERVAL);
                     }
                     _ => {
-                        error!("Error accepting socket transfer: {e}");
+                        error!("error accepting fd socket: {e}");
                         return Err(e);
                     }
                 }
@@ -132,12 +144,14 @@ fn accept_with_retry(listen_fd: i32) -> Result<i32, NixError> {
     }
 }
 
-pub fn get_fds<P>(path: &P, payload: &mut [u8]) -> Result<(Vec<RawFd>, usize), NixError>
+/// the maximum capacity of the generated fds
+const MAX_FDS: usize = 32;
+
+/// main business logic used to generate a file descriptors from unix socket
+fn generate_fds<P>(path: &P, payload: &mut [u8]) -> Result<(Vec<RawFd>, usize), NixError>
 where
     P: ?Sized + NixPath + Display,
 {
-    const MAX_FDS: usize = 32;
-
     let listener_fd = socket::socket(
         AddressFamily::Unix,
         SockType::Stream,
@@ -149,17 +163,12 @@ where
     let unix_address = UnixAddr::new(path).unwrap();
 
     match nix::unistd::unlink(path) {
-        Ok(()) => {
-            info!("success unlink: {path}");
-        }
-        Err(e) => {
-            debug!("error unlink: {path}: {e}");
-        }
+        Ok(()) => info!("success unlink: {path}"),
+        Err(e) => debug!("error unlink: {path}: {e}"),
     }
 
     socket::bind(listener_fd, &unix_address).unwrap();
-
-    /* sock is created before we change user, need to give permission to all */
+    // sock is created before we change user, need to give permission to all
     stat::fchmodat(
         None,
         path,
@@ -170,11 +179,11 @@ where
 
     socket::listen(listener_fd, 8).unwrap();
 
-    let fd = match accept_with_retry(listener_fd) {
+    let fd = match accept_socket(listener_fd) {
         Ok(fd) => fd,
         Err(e) => {
-            error!("Giving up reading socket from: {path}, error: {e:?}");
-            //cleanup
+            error!("error reading socket from path: {path}: {e}");
+            // clean up
             if nix::unistd::close(listener_fd).is_ok() {
                 nix::unistd::unlink(path).unwrap();
             }
@@ -201,7 +210,7 @@ where
         }
     }
 
-    //cleanup
+    // clean up
     if nix::unistd::close(listener_fd).is_ok() {
         nix::unistd::unlink(path).unwrap();
     }
@@ -209,7 +218,7 @@ where
     Ok((fds, msg.bytes))
 }
 
-pub fn send_fds<P>(fds: Vec<RawFd>, payload: &[u8], path: &P) -> Result<usize, NixError>
+pub fn send_to_process<P>(fds: Vec<RawFd>, payload: &[u8], path: &P) -> Result<usize, NixError>
 where
     P: ?Sized + NixPath + std::fmt::Display,
 {
