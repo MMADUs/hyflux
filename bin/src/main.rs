@@ -32,6 +32,6 @@ fn main() {
     service1.add_tcp("127.0.0.1:8500", None);
     service1.add_tcp("127.0.0.1:8600", None);
     let mut server = core::server::server::Server::new();
-    server.add_service(service1);
+    // server.add_service(service1);
     server.run_forever();
 }

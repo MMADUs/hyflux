@@ -15,6 +15,7 @@
 //! You should have received a copy of the GNU Affero General Public License
 //! along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use async_trait::async_trait;
 use futures::future;
 use std::fs::Permissions;
 use std::sync::Arc;
@@ -33,11 +34,22 @@ pub trait ServiceType: Send + Sync + 'static {
     fn say_hi(&self) -> String;
 }
 
+/// the process interface for running a service
+#[async_trait]
+pub trait ServiceProcess: Send + Sync {
+    /// function called when starting the service
+    async fn start_service(
+        &mut self,
+        listener_fd: Option<Arc<Mutex<ListenerFd>>>,
+        shutdown_notifier: watch::Receiver<bool>,
+    );
+}
+
 /// service can serve on multiple network
 /// many service is served to the main server
 pub struct Service<A> {
     pub name: String,
-    pub service: A,
+    pub service: Option<A>,
     pub address_stack: Vec<ListenerAddress>,
     pub stream_session: StreamManager,
 }
@@ -45,10 +57,10 @@ pub struct Service<A> {
 // service implementation mainly for managing service
 impl<A> Service<A> {
     /// new service instance
-    pub fn new(name: &str, service_type: A) -> Self {
+    pub fn new(name: &str, service: A) -> Self {
         Service {
             name: name.to_string(),
-            service: service_type,
+            service: Some(service),
             address_stack: Vec::new(),
             stream_session: StreamManager::new(None),
         }
@@ -67,18 +79,20 @@ impl<A> Service<A> {
     }
 }
 
-// service implementation mainly for running the service
-impl<A: ServiceType + Send + Sync + 'static> Service<A> {
+#[async_trait]
+impl<A> ServiceProcess for Service<A>
+where
+    A: ServiceType + Send + Sync + 'static,
+{
     /// preparing to build the listener & start the service
-    pub async fn start_service(
-        self: &Arc<Self>,
-        address_stack: Vec<ListenerAddress>,
+    async fn start_service(
+        &mut self,
         listener_fd: Option<Arc<Mutex<ListenerFd>>>,
         shutdown_notifier: watch::Receiver<bool>,
     ) {
         // build all listeners
-        let mut listeners = Vec::with_capacity(address_stack.len());
-        for listener_addr in address_stack {
+        let mut listeners = Vec::with_capacity(self.address_stack.len());
+        for listener_addr in self.address_stack.clone() {
             let address = listener_addr.get_address();
             // check for generated fd
             let fd = match &listener_fd {
@@ -92,24 +106,30 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
             let listener = listener_addr.bind_to_listener(fd.as_ref()).await;
             listeners.push(listener);
         }
+        // service logic
+        let service = self.service.take().expect("can only take service logic once");
+        let service = Arc::new(service);
         // spawn task handler for each listener
         let handlers: Vec<_> = listeners
             .into_iter()
             .map(|listener| {
-                let service = Arc::clone(self);
+                let service = service.clone();
                 let shutdown_notifier = shutdown_notifier.clone();
                 tokio::spawn(async move {
-                    service.run_service(listener, shutdown_notifier).await;
+                    Self::run_service(service, listener, shutdown_notifier).await;
                 })
             })
             .collect();
         // run the listener handler
         future::join_all(handlers).await;
     }
+}
 
+// service implementation mainly for running the service
+impl<A: ServiceType + Send + Sync + 'static> Service<A> {
     /// service io handler
     async fn run_service(
-        self: &Arc<Self>,
+        service: Arc<A>,
         listener: ServiceEndpoint,
         mut shutdown_notifier: watch::Receiver<bool>,
     ) {
@@ -138,10 +158,10 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
             match new_io {
                 Ok((downstream, socket_address)) => {
                     // get self reference
-                    let service = Arc::clone(self);
+                    let service = service.clone();
                     tokio::spawn(async move {
                         // handle here
-                        service.handle_connection(downstream, socket_address).await
+                        Self::handle_connection(service, downstream, socket_address).await
                     });
                 }
                 Err(e) => {
@@ -153,40 +173,40 @@ impl<A: ServiceType + Send + Sync + 'static> Service<A> {
 
     /// handling incoming request
     async fn handle_connection(
-        self: &Arc<Self>,
+        service: Arc<A>,
         downstream: Stream,
         _socket_address: SocketAddress,
     ) {
-        println!("some message!: {}", self.service.say_hi());
+        println!("some message!: {}", service.say_hi());
 
         let address = SocketAddress::parse_tcp("127.0.0.1:8000");
 
-        // simulate a given backend peer
-        let peer = UpstreamPeer::new("node 1", &self.name, address);
-
-        // get upstream connection
-        let upstream = match self.stream_session.get_connection_from_pool(&peer).await {
-            Ok((upstream, is_reused)) => {
-                if is_reused {
-                    println!("reusing stream from pool");
-                } else {
-                    println!("connection does not exist in pool, new stream created");
-                }
-                upstream
-            }
-            Err(_) => panic!("error getting stream from pool"),
-        };
-
-        // handle io copy & returned the upstream
-        let upstream = match self.handle_process(downstream, upstream).await {
-            Ok(stream) => stream,
-            Err(_) => panic!("error during io copy"),
-        };
-
-        // return upstream to pool
-        self.stream_session
-            .return_connection_to_pool(upstream, &peer)
-            .await;
-        println!("upstream connection returned");
+        //// simulate a given backend peer
+        //let peer = UpstreamPeer::new("node 1", service.name, address);
+        //
+        //// get upstream connection
+        //let upstream = match service.stream_session.get_connection_from_pool(&peer).await {
+        //    Ok((upstream, is_reused)) => {
+        //        if is_reused {
+        //            println!("reusing stream from pool");
+        //        } else {
+        //            println!("connection does not exist in pool, new stream created");
+        //        }
+        //        upstream
+        //    }
+        //    Err(_) => panic!("error getting stream from pool"),
+        //};
+        //
+        //// handle io copy & returned the upstream
+        //let upstream = match service.handle_process(downstream, upstream).await {
+        //    Ok(stream) => stream,
+        //    Err(_) => panic!("error during io copy"),
+        //};
+        //
+        //// return upstream to pool
+        //service.stream_session
+        //    .return_connection_to_pool(upstream, &peer)
+        //    .await;
+        //println!("upstream connection returned");
     }
 }

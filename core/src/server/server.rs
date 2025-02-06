@@ -25,10 +25,11 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info};
 
 use crate::server::daemon::daemonize_server;
-use crate::service::service::{Service, ServiceType};
+use crate::service::service::{Service, ServiceProcess, ServiceType};
 
 use super::daemon::DaemonConfig;
 use super::fd::ListenerFd;
+use super::task::{BackgroundTask, Task};
 
 /// the system runtime for work stealing
 pub struct Runtime(tokio::runtime::Runtime);
@@ -72,13 +73,15 @@ enum ShutdownType {
 }
 
 /// the server can run mulitple services
-pub struct Server<A> {
+pub struct Server {
     /// list of services
-    services: Vec<Service<A>>,
+    services: Vec<Box<dyn ServiceProcess>>,
     /// the number of threads allocated for each service
     service_threads: usize,
     /// service runtime shutdown timeouts
     service_shutdown_timeout: Option<u64>,
+    /// background task
+    //background_tasks: Vec<Task<T>>,
     /// listener fds
     listener_fd: Option<Arc<Mutex<ListenerFd>>>,
     /// shutdown coordinator
@@ -94,7 +97,7 @@ pub struct Server<A> {
     shutdown_duration: Option<u64>,
 }
 
-impl<A: ServiceType + Send + Sync + 'static> Server<A> {
+impl Server {
     /// build the server
     pub fn new() -> Self {
         let (send, recv) = watch::channel(false);
@@ -113,15 +116,25 @@ impl<A: ServiceType + Send + Sync + 'static> Server<A> {
         }
     }
 
-    /// add service to the server
-    pub fn add_service(&mut self, service: Service<A>) {
-        self.services.push(service);
+    /// add service to server
+    pub fn add_service(&mut self, service: impl ServiceProcess + 'static) {
+        self.services.push(Box::new(service));
     }
 
-    /// add multiple services at once to the server
-    pub fn add_services(&mut self, services: Vec<Service<A>>) {
+    /// add multiple services at once to server
+    pub fn add_services(&mut self, services: Vec<Box<dyn ServiceProcess>>) {
         self.services.extend(services);
     }
+
+    ///// add background task to server
+    //pub fn add_task(&mut self, task: Task<T>) {
+    //    self.background_tasks.push(task);
+    //}
+    //
+    ///// add multiple background task at once to server
+    //pub fn add_tasks(&mut self, tasks: Vec<Task<T>>) {
+    //    self.background_tasks.extend(tasks);
+    //}
 
     /// set every listener to be gracefully restart
     pub fn with_upgrade(&mut self, enabled: bool, path: &str) {
@@ -231,21 +244,17 @@ impl<A: ServiceType + Send + Sync + 'static> Server<A> {
 
     /// run every service in the server
     fn run_service(
-        service: Service<A>,
+        mut service: Box<dyn ServiceProcess>,
         alloc_threads: usize,
         listener_fd: Option<Arc<Mutex<ListenerFd>>>,
         shutdown_notifier: watch::Receiver<bool>,
     ) -> Runtime {
         // a runtime is needed to run all the services
-        let rt_name = format!("service-runtime: {}", service.name);
+        let rt_name = format!("temporary name");
         let runtime = Runtime::new(rt_name.as_str(), alloc_threads);
         // this service will be handled concurrently across threads
-        let address_stack = service.address_stack.clone();
-        let service = Arc::new(service);
         runtime.handle_work().spawn(async move {
-            service
-                .start_service(address_stack, listener_fd, shutdown_notifier)
-                .await;
+            service.start_service(listener_fd, shutdown_notifier).await;
         });
         runtime
     }
