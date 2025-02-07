@@ -26,23 +26,13 @@ use crate::network::listener::{ListenerAddress, ServiceEndpoint, TcpListenerConf
 use crate::network::socket::SocketAddress;
 use crate::pool::manager::StreamManager;
 use crate::server::fd::ListenerFd;
+use crate::server::process::Process;
 use crate::service::peer::UpstreamPeer;
 use crate::stream::stream::Stream;
 
 // TESTING traits for customization soon
 pub trait ServiceType: Send + Sync + 'static {
     fn say_hi(&self) -> String;
-}
-
-/// the process interface for running a service
-#[async_trait]
-pub trait ServiceProcess: Send + Sync {
-    /// function called when starting the service
-    async fn start_service(
-        &mut self,
-        listener_fd: Option<Arc<Mutex<ListenerFd>>>,
-        shutdown_notifier: watch::Receiver<bool>,
-    );
 }
 
 /// service can serve on multiple network
@@ -54,7 +44,7 @@ pub struct Service<A> {
     pub stream_session: StreamManager,
 }
 
-// service implementation mainly for managing service
+/// service implementation mainly for managing service
 impl<A> Service<A> {
     /// new service instance
     pub fn new(name: &str, service: A) -> Self {
@@ -79,13 +69,14 @@ impl<A> Service<A> {
     }
 }
 
+/// implement the service as a part of the system process
 #[async_trait]
-impl<A> ServiceProcess for Service<A>
+impl<A> Process for Service<A>
 where
     A: ServiceType + Send + Sync + 'static,
 {
-    /// preparing to build the listener & start the service
-    async fn start_service(
+    /// start the service process
+    async fn start_process(
         &mut self,
         listener_fd: Option<Arc<Mutex<ListenerFd>>>,
         shutdown_notifier: watch::Receiver<bool>,
@@ -123,9 +114,14 @@ where
         // run the listener handler
         future::join_all(handlers).await;
     }
+
+    /// service process name
+    fn process_name(&self) -> String {
+        format!("service -> {}", self.name)
+    }
 }
 
-// service implementation mainly for running the service
+/// service implementation mainly for handling service connections
 impl<A: ServiceType + Send + Sync + 'static> Service<A> {
     /// service io handler
     async fn run_service(

@@ -25,11 +25,10 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info};
 
 use crate::server::daemon::daemonize_server;
-use crate::service::service::{Service, ServiceProcess, ServiceType};
 
 use super::daemon::DaemonConfig;
 use super::fd::ListenerFd;
-use super::task::{BackgroundTask, Task};
+use super::process::Process;
 
 /// the system runtime for work stealing
 pub struct Runtime(tokio::runtime::Runtime);
@@ -60,7 +59,7 @@ impl Runtime {
 /// a timeout before shutting down
 const CLOSE_TIMEOUT: u64 = 5;
 
-/// a timeout for shutting down each service runtime
+/// a timeout for shutting down each process runtime
 const RUNTIME_TIMOUT: u64 = 5;
 
 /// a timeout before completely shutting down everything
@@ -72,16 +71,12 @@ enum ShutdownType {
     Fast,
 }
 
-/// the server can run mulitple services
+/// the server can run mulitple prorcesses
 pub struct Server {
-    /// list of services
-    services: Vec<Box<dyn ServiceProcess>>,
-    /// the number of threads allocated for each service
-    service_threads: usize,
-    /// service runtime shutdown timeouts
-    service_shutdown_timeout: Option<u64>,
-    /// background task
-    //background_tasks: Vec<Task<T>>,
+    /// list of a running process
+    processes: Vec<Box<dyn Process>>,
+    /// process runtime shutdown timeouts
+    process_shutdown_timeout: Option<u64>,
     /// listener fds
     listener_fd: Option<Arc<Mutex<ListenerFd>>>,
     /// shutdown coordinator
@@ -102,9 +97,8 @@ impl Server {
     pub fn new() -> Self {
         let (send, recv) = watch::channel(false);
         Server {
-            services: Vec::new(),
-            service_threads: 1,
-            service_shutdown_timeout: None,
+            processes: Vec::new(),
+            process_shutdown_timeout: None,
             listener_fd: None,
             shutdown_send: send,
             shutdown_recv: recv,
@@ -116,25 +110,18 @@ impl Server {
         }
     }
 
-    /// add service to server
-    pub fn add_service(&mut self, service: impl ServiceProcess + 'static) {
-        self.services.push(Box::new(service));
+    /// add process to server
+    pub fn add_process<P>(&mut self, process: P)
+    where
+        P: Process + Send + Sync + 'static,
+    {
+        self.processes.push(Box::new(process));
     }
 
-    /// add multiple services at once to server
-    pub fn add_services(&mut self, services: Vec<Box<dyn ServiceProcess>>) {
-        self.services.extend(services);
+    /// add multiple process at once to server
+    pub fn add_processes(&mut self, processes: Vec<Box<dyn Process>>) {
+        self.processes.extend(processes);
     }
-
-    ///// add background task to server
-    //pub fn add_task(&mut self, task: Task<T>) {
-    //    self.background_tasks.push(task);
-    //}
-    //
-    ///// add multiple background task at once to server
-    //pub fn add_tasks(&mut self, tasks: Vec<Task<T>>) {
-    //    self.background_tasks.extend(tasks);
-    //}
 
     /// set every listener to be gracefully restart
     pub fn with_upgrade(&mut self, enabled: bool, path: &str) {
@@ -154,7 +141,7 @@ impl Server {
 
     /// set server timeouts
     pub fn set_timeouts(&mut self, shutdown: Option<u64>, runtime: Option<u64>) {
-        self.service_shutdown_timeout = runtime;
+        self.process_shutdown_timeout = runtime;
         self.shutdown_duration = shutdown;
     }
 
@@ -191,12 +178,11 @@ impl Server {
                 .expect("error generating socket");
             self.listener_fd = Some(Arc::new(Mutex::new(fds)));
         }
-        // running services
+        // generated runtimes for running processes
         let mut runtimes: Vec<Runtime> = Vec::new();
-        while let Some(service) = self.services.pop() {
-            let runtime = Self::run_service(
-                service,
-                self.service_threads,
+        while let Some(process) = self.processes.pop() {
+            let runtime = Self::handle_process(
+                process,
                 self.listener_fd.clone(),
                 self.shutdown_recv.clone(),
             );
@@ -217,12 +203,12 @@ impl Server {
         // runtime timeouts
         let runtime_timeout = match shutdown_type {
             ShutdownType::Graceful => {
-                let timeout = self.service_shutdown_timeout.unwrap_or(RUNTIME_TIMOUT);
+                let timeout = self.process_shutdown_timeout.unwrap_or(RUNTIME_TIMOUT);
                 Duration::from_secs(timeout)
             }
             ShutdownType::Fast => Duration::from_secs(0),
         };
-        // shutdown every service runtime
+        // shutdown every process runtime
         let runtime_shutdowns: Vec<_> = runtimes
             .into_iter()
             .map(|runtime| {
@@ -242,19 +228,18 @@ impl Server {
         std::process::exit(0) // exit code 0
     }
 
-    /// run every service in the server
-    fn run_service(
-        mut service: Box<dyn ServiceProcess>,
-        alloc_threads: usize,
+    /// generate a process handler
+    fn handle_process(
+        mut process: Box<dyn Process>,
         listener_fd: Option<Arc<Mutex<ListenerFd>>>,
         shutdown_notifier: watch::Receiver<bool>,
     ) -> Runtime {
-        // a runtime is needed to run all the services
-        let rt_name = format!("temporary name");
-        let runtime = Runtime::new(rt_name.as_str(), alloc_threads);
-        // this service will be handled concurrently across threads
+        // a runtime is created to run the process
+        let rt_name = format!("process-runtime -> {}", process.process_name());
+        // the number of threads is set to 1 by default
+        let runtime = Runtime::new(rt_name.as_str(), process.alloc_threads().unwrap_or(1));
         runtime.handle_work().spawn(async move {
-            service.start_service(listener_fd, shutdown_notifier).await;
+            process.start_process(listener_fd, shutdown_notifier).await;
         });
         runtime
     }

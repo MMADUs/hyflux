@@ -19,11 +19,16 @@ use std::{
     collections::{BTreeSet, HashSet},
     net::ToSocketAddrs,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+use async_trait::async_trait;
 
 use arc_swap::ArcSwap;
 use futures::FutureExt;
+use tokio::sync::watch;
+
+use crate::server::task::BackgroundTask;
 
 use super::{
     backend::{Backend, Backends},
@@ -178,5 +183,49 @@ where
     /// get the backends from load balancer
     pub fn backends(&self) -> &Backends {
         &self.backends
+    }
+}
+
+/// implement load balancer as a background task executed by process
+#[async_trait]
+impl<S> BackgroundTask for LoadBalancer<S>
+where
+    S: BackendSelection + Send + Sync + 'static,
+    S::Iter: BackendIterator,
+{
+    async fn run_task(&self, shutdown_notifier: watch::Receiver<bool>) {
+        // 136 years
+        const NEVER: Duration = Duration::from_secs(u32::MAX as u64);
+        let mut now = Instant::now();
+        // run update and healthcheck once
+        let mut next_backend_update = now;
+        let mut next_health_check = now;
+        // infinite loop
+        loop {
+            // stop task immediately on shutdown
+            if *shutdown_notifier.borrow() {
+                return;
+            }
+            // do backend update
+            if next_backend_update <= now {
+                let _ = self.update().await;
+                next_backend_update = now + self.update_frequency.unwrap_or(NEVER);
+            }
+            // do health check update
+            if next_health_check <= now {
+                self.backends
+                    .run_health_check(self.parallel_health_check)
+                    .await;
+                next_health_check = now + self.health_check_frequency.unwrap_or(NEVER);
+            }
+            // if frequency are none, stop the task
+            if self.update_frequency.is_none() && self.health_check_frequency.is_none() {
+                return;
+            }
+            // continue task
+            let to_wake = std::cmp::min(next_backend_update, next_health_check);
+            tokio::time::sleep_until(to_wake.into()).await;
+            now = Instant::now();
+        }
     }
 }

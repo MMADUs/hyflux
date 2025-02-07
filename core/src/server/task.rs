@@ -18,7 +18,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::watch;
+use tokio::sync::{watch, Mutex};
+
+use super::{fd::ListenerFd, process::Process};
 
 /// the running background task interface
 #[async_trait]
@@ -53,5 +55,28 @@ where
     /// execute task
     pub async fn execute(&self, shutdown_notifier: watch::Receiver<bool>) {
         self.task.run_task(shutdown_notifier).await;
+    }
+}
+
+/// the executable task is the part of the system process
+#[async_trait]
+impl<T> Process for Task<T>
+where 
+    T: BackgroundTask + Send + Sync + 'static,
+{
+    async fn start_process(
+        &mut self,
+        _listener_fds: Option<Arc<Mutex<ListenerFd>>>,
+        shutdown_notifier: watch::Receiver<bool>,
+    ) {
+        self.execute(shutdown_notifier).await;
+    }
+
+    fn process_name(&self) -> String {
+        format!("background-task -> {}", self.name)
+    }
+
+    fn alloc_threads(&self) -> Option<usize> {
+        self.threads
     }
 }
